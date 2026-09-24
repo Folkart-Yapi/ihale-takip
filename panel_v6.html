@@ -2765,7 +2765,19 @@ function rHavuz() {
 }
 
 function rDizayn() {
-  const rows = projeFiltre(SbData).filter(i => i.durum !== 'tamamlandi' && i.durum !== 'iptal');
+  const rows = projeFiltre(SbData).filter(i => {
+    if (i.durum === 'tamamlandi' || i.durum === 'iptal') return false;
+    // ══════════════════════════════════════════════════════════════
+    // IHALE YAYINLANDIYSA (M4) DIZAYNIN BU LISTEDE ISI KALMAZ.
+    // Liste bir IS KUYRUGUDUR, arsiv degil. Dusen paket kaybolmaz;
+    // Ihale Havuzu'ndan, Satin Alma panosundan ve detay penceresinden
+    // gorulmeye devam eder.
+    // Esik icin bkz. dizaynListesindenDustuMu() — 24.09.2026'da
+    // M3'ten M4'e cekildi (Doruk).
+    // ══════════════════════════════════════════════════════════════
+    if (dizaynListesindenDustuMu(i)) return false;
+    return true;
+  });
   // Siralama: M2 (Proje Yayin) PLANLANAN tarihine gore, en yakin en ustte.
   // Dizayni bitmis (M2 gerceklesmis) paketler listenin sonuna gider.
   // Siralama: 1) santiyenin iade ettikleri en uste (aksiyon bekliyor),
@@ -3082,8 +3094,8 @@ async function saDrop(ev, targetStatus) {
   MS_LISTE.forEach(m => { g[m] = ('gercek_' + m in upd) ? upd['gercek_' + m] : it['_g' + m]; });
   upd.durum = durumTuret(g);
 
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', dbId);
-  if (error) { toast('Güncelleme hatası: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', dbId), 'Aşama değişikliği');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
 
   // ── NE OLDUĞUNU AÇIKÇA YAZ ──
   // Onay penceresi olmadığı için tek geri bildirim bu. Özellikle silme
@@ -3332,6 +3344,23 @@ function santiyeOnayDurumu(i) {
 // santiyeye fiilen devredilmistir — Excel'den gelen kayitlarda boyle olur.
 function santiyeDevredildiMi(i) {
   return !!(i && (i._gm3 || i._gm4 || i._gm5 || i._gm6 || i._gm7 || i._gm8));
+}
+
+// ════════════════════════════════════════════════════════════════════
+// DIZAYN LISTESINDEN DUSME ESIGI — M4 (Ihale Yayini)
+// Doruk, 24.09.2026: "M4'e gecenler artik dizayn listesinden kalksin."
+//
+// DIKKAT: burada santiyeDevredildiMi KULLANILMIYOR. O fonksiyon M3'ten
+// baslar ve uzerine baska uc kural kurulu (santiye sol listesi, Ozel
+// Projeler atama kapisi, M3+ otomatik santiye kabulu). Esigi orada
+// degistirmek o ucunu birden bozar. Dizayn listesinin esigi AYRI ve
+// yalnizca buraya ait — ileride degistirmek gerekirse tek yer burasi.
+//
+// Sonuc: talep (M3) girilmis ama ihale henuz yayinlanmamis paketler
+// dizayn listesinde KALIR; ihale yayinlandigi anda (M4) duser.
+// ════════════════════════════════════════════════════════════════════
+function dizaynListesindenDustuMu(i) {
+  return !!(i && (i._gm4 || i._gm5 || i._gm6 || i._gm7 || i._gm8));
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -3588,8 +3617,8 @@ async function santiyeImalatBasladi(id) {
   const g = {};
   MS_LISTE.forEach(m => { g[m] = (m === 'm8') ? tarih : it['_g' + m]; });
   if (it.durum !== 'bloke' && it.durum !== 'iptal') upd.durum = durumTuret(g);
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', id);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', id), 'İmalat başlangıcı');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast(it.id + ': imalat başlangıcı ' + fmtTarih(tarih) + ' olarak girildi — iş tamamlandı', 'ok');
   await loadIhaleler(); renderAll();
 }
@@ -3620,8 +3649,8 @@ async function dizaynSantiyeyeGonder() {
     santiye_onay_durum: 'bekliyor',
     santiye_red_nedeni: null,
   };
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', editId);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', editId), 'Şantiye onayına gönderme');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Dizayn şantiye onayına gönderildi', 'ok');
   closeOv('ov-form');
   await loadIhaleler(); renderAll(); rHavuz(); rSantiye();
@@ -3645,6 +3674,44 @@ async function opNotEkle_metin(it, metin) {
 }
 
 // ── Dizayn: pakete OP damgasi vurur ──
+
+// ════════════════════════════════════════════════════════════════════
+// YAZMA DENETIMI — "kaydettim" derken kaydetmemis olma
+//
+// Doruk, 21.09.2026. Belirti: Ozel Projeler ve Ic Mekan birimine gonderme
+// bir projede calisiyor, otekinde calismiyordu — HIC HATA VERMEDEN.
+//
+// SEBEBI: PostgreSQL'de bir UPDATE/DELETE politikasinin USING ifadesi
+// satiri disarida birakirsa o satir kullanici icin GORUNMEZ olur. Islem
+// 0 satir etkiler ve BASARILI sayilir; PostgREST bunu {error: null}
+// diye aktarir. (WITH CHECK ihlali ise HATA dondurur — baska sey.)
+// Panelin butun yazma yollari bugune kadar yalnizca error'a bakiyordu,
+// dolayisiyla yetkisi olmayan bir projedeki her yazma yesil "kaydedildi"
+// bildirimi veriyor ama hicbir sey yazilmiyordu. Sayfa yenilenince
+// degisiklik yok. Bu yalniz OP'ye ozgu degildi: talep girisi, tarih
+// girisi, iptal, surukle-birak, Excel yuklemesi — hepsi ayni acikti.
+//
+// COZUM: yazmadan sonra etkilenen satirlari GERI ISTE (.select) ve say.
+// Sifir satir dondu ise bu bir HATADIR, basari degil.
+//
+// NOT: .select() geri okuma yetkisi ister. Bu panelde okuma projeye
+// BAGLI DEGIL — loadIhaleler butun projeleri her role okuyor ve
+// kullanici zaten o satiri ekranda gorup dugmesine basiyor. O yuzden
+// "yazdi ama geri okuyamadi" diye yanlis alarm riski yok.
+// ════════════════════════════════════════════════════════════════════
+const YAZILAMADI_NOT = ' kaydedilemedi — bu projede yetkiniz olmayabilir. '
+                     + 'Değişiklik veritabanına yazılmadı. Yöneticinize danışın.';
+
+// sorgu: sb.from(...).update(...).eq(...)  ya da  .delete().eq(...)
+// ne   : kullaniciya gosterilecek is adi ("Atama", "Talep", ...)
+async function dbYaz(sorgu, ne) {
+  const { data, error } = await sorgu.select('id');
+  if (error) return { ok: false, mesaj: 'Hata: ' + error.message, hata: error };
+  const adet = Array.isArray(data) ? data.length : null;
+  if (adet === 0) return { ok: false, mesaj: (ne || 'Kayıt') + YAZILAMADI_NOT, yetki: true };
+  return { ok: true, adet: adet };
+}
+
 async function opAta(id) {
   const it = SbData.find(x => x._id === id);
   if (!it) return;
@@ -3658,8 +3725,8 @@ async function opAta(id) {
     op_atayan_id: CU.id,
     op_tur: (it.op_tur || 0) + 1,
   };
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', id);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', id), 'Atama');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Paket Özel Projeler ve İç Mekan birimine atandı. Şantiye onayına gönderilemez.', 'ok');
   await loadIhaleler(); renderAll(); rHavuz();
 }
@@ -3676,8 +3743,8 @@ async function opGeriAl(id) {
   const upd = it.op_tamamlanma_tarihi
     ? { op_durum: 'tamamlandi' }
     : { op_durum: null, op_atama_tarihi: null, op_atayan_id: null };
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', id);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', id), 'Atamanın geri alınması');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Özel Projeler ve İç Mekan ataması geri alındı', 'ok');
   await loadIhaleler(); renderAll(); rHavuz();
 }
@@ -3700,8 +3767,8 @@ async function opTamamla(id) {
     op_tamamlanma_tarihi: today(),
     op_notlar: await opNotEkle_metin(it, metin),
   };
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', id);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', id), 'Tamamlama');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Özel Projeler ve İç Mekan seçimi tamamlandı', 'ok');
   await loadIhaleler(); renderAll(); rHavuz();
 }
@@ -3714,9 +3781,9 @@ async function opNotEkle(id) {
   const kutu = document.getElementById('opnot-' + id);
   const metin = kutu ? kutu.value.trim() : '';
   if (!metin) { toast('Önce not yazın', 'err'); if (kutu) kutu.focus(); return; }
-  const { error } = await sb.from('ihaleler')
-    .update({ op_notlar: await opNotEkle_metin(it, metin) }).eq('id', id);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler')
+    .update({ op_notlar: await opNotEkle_metin(it, metin) }).eq('id', id), 'Not');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Not eklendi', 'ok');
   await loadIhaleler(); renderAll();
 }
@@ -3748,8 +3815,8 @@ async function opTekrarGonderOnayla() {
     op_tur: (it.op_tur || 0) + 1,
     op_notlar: await opNotEkle_metin(it, 'TEKRAR GÖNDERİLDİ — ' + metin.trim()),
   };
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', opTekrarHedef);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', opTekrarHedef), 'Tekrar gönderme');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   closeOv('ov-op-tekrar'); opTekrarHedef = null;
   toast('Paket tekrar Özel Projeler ve İç Mekan birimine gönderildi', 'ok');
   await loadIhaleler(); renderAll(); rHavuz();
@@ -3768,8 +3835,8 @@ async function santiyeKabul(id) {
   const g = {};
   MS_LISTE.forEach(m => { g[m] = ('gercek_'+m in upd) ? upd['gercek_'+m] : it['_g'+m]; });
   if (it.durum !== 'bloke' && it.durum !== 'iptal') upd.durum = durumTuret(g);
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', id);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', id), 'Dizayn kabulü');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   const sure = it._s_talep || 0;
   toast(sure
     ? 'Dizayn kabul edildi. Artık talep girebilirsiniz (hedef: ' + fmtTarih(addGun(t, sure)) + ')'
@@ -3831,12 +3898,12 @@ async function santiyeRedOnayla() {
   const basi = await redImza();
   const eski = String((it && it.santiye_red_nedeni) || '').trim();
   const yeni = eski ? eski + RED_AYRAC + basi + metin : basi + metin;
-  const { error } = await sb.from('ihaleler').update({
+  const _yz = await dbYaz(sb.from('ihaleler').update({
     santiye_onay_durum: 'red',
     santiye_red_nedeni: yeni,
     dizayn_santiyeye_gonderildi: false,
-  }).eq('id', redHedefId);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  }).eq('id', redHedefId), 'Dizayn iadesi');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   closeOv('ov-red'); redHedefId = null;
   toast('Dizayn eksik olarak iade edildi', 'ok');
   await loadIhaleler(); renderAll(); rSantiye(); rHavuz();
@@ -3861,8 +3928,8 @@ async function santiyeTalepGir(id) {
   const g = {};
   MS_LISTE.forEach(m => { g[m] = ('gercek_'+m in upd) ? upd['gercek_'+m] : it['_g'+m]; });
   if (it.durum !== 'bloke' && it.durum !== 'iptal') upd.durum = durumTuret(g);
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', id);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', id), 'Talep');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Talep girildi → İhale & Satınalma birimine iletildi', 'ok');
   await loadIhaleler(); renderAll(); rSantiye(); rHavuz();
 }
@@ -3924,8 +3991,8 @@ async function talepRedOnayla() {
   const g = {};
   MS_LISTE.forEach(m => { g[m] = ('gercek_' + m in upd) ? upd['gercek_' + m] : (it ? it['_g' + m] : null); });
   if (it && it.durum !== 'bloke' && it.durum !== 'iptal') upd.durum = durumTuret(g);
-  const { error } = await sb.from('ihaleler').update(upd).eq('id', talepRedHedefId);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update(upd).eq('id', talepRedHedefId), 'Talep iadesi');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   closeOv('ov-talep-red'); talepRedHedefId = null;
   toast('Talep şantiyeye iade edildi', 'ok');
   await loadIhaleler(); renderAll(); rSantiye(); rHavuz(); rPipeline();
@@ -4389,7 +4456,12 @@ async function saveForm() {
   let error;
   if (editId) {
     const origRow = SbData.find(i=>i._id===editId);
-    if (origRow?._id) ({error}=await sb.from('ihaleler').update(veri).eq('id',origRow._id));
+    if (origRow?._id) {
+      // Guncellemede yalniz error'a bakmak yetmiyor: yetkisiz projede
+      // 0 satir yazilir ve hata cikmaz (bkz. dbYaz aciklamasi).
+      const _yz = await dbYaz(sb.from('ihaleler').update(veri).eq('id', origRow._id), 'İhale');
+      if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
+    }
   } else {
     if (SbData.find(i=>i.id.toUpperCase()===id.toUpperCase() && i.proje_id===projeId)) { toast('Bu Ihale No bu projede zaten mevcut','err'); return; }
     ({error}=await sb.from('ihaleler').insert(veri));
@@ -4616,8 +4688,8 @@ function vgIhaleYetkiUygula() {
 // ════════════════════════════════════════════
 async function archiveItem(id) {
   const it=SbData.find(i=>i._id===id); if (!it?._id) return;
-  const { error }=await sb.from('ihaleler').update({durum:'tamamlandi'}).eq('id',it._id);
-  if (error) { toast('Arşivleme hatası','err'); return; }
+  const _yz = await dbYaz(sb.from('ihaleler').update({durum:'tamamlandi'}).eq('id',it._id), 'Arşivleme');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast(`"${it.paket}" arşivlendi OK`,'ok');
   await loadIhaleler(); await loadArchive(); renderAll(); rHavuz();
 }
@@ -4642,12 +4714,12 @@ async function iptalOnayla() {
   const kim = (await sb.from('kullanici_profilleri').select('ad_soyad,rol').eq('id', CU.id).single()).data;
   const tarih = new Date().toLocaleDateString('tr-TR');
   const kayit = '[' + tarih + ' - ' + (kim?.ad_soyad||CU.email) + ' (' + (kim?.rol||'') + ')]: ' + neden;
-  const { error } = await sb.from('ihaleler').update({
+  const _yz = await dbYaz(sb.from('ihaleler').update({
     durum: 'iptal',
     iptal_nedeni: kayit,
     iptal_tarihi: formatDateLocal(new Date()),
-  }).eq('id', iptalHedefId);
-  if (error) { toast('İptal kaydedilemedi: ' + error.message, 'err'); return; }
+  }).eq('id', iptalHedefId), 'İptal');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   closeOv('ov-iptal');
   iptalHedefId = null;
   toast('İhale iptal edildi', 'ok');
@@ -4660,8 +4732,8 @@ function deleteItem(id) {
   document.getElementById('confirm-ok').onclick=async()=>{
     closeOv('ov-confirm');
     if (!it?._id) return;
-    const { error }=await sb.from('ihaleler').delete().eq('id',it._id);
-    if (error) { toast('Silme hatası','err'); return; }
+    const _yz = await dbYaz(sb.from('ihaleler').delete().eq('id',it._id), 'Silme');
+    if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
     toast('Kayıt silindi','err');
     await loadIhaleler(); await loadArchive(); renderAll(); rHavuz();
   };
@@ -5754,8 +5826,9 @@ async function xlYaz(proje, rows, iptaleGidecek) {
             if (v.talep_onay_durum   === 'red') veri.talep_onay_durum   = null;
             if (v.santiye_onay_durum === 'red') veri.santiye_onay_durum = 'kabul';
           }
-          const { error } = await sb.from('ihaleler').update(veri).eq('id', v._id);
-          if (error) throw error;
+          const _yz = await dbYaz(sb.from('ihaleler').update(veri).eq('id', v._id), 'Kayıt');
+          // 0 satir yazildiysa hata YOKTUR ama kayit da yoktur — yutma.
+          if (!_yz.ok) throw (_yz.hata || new Error(_yz.mesaj));
           guncellendi++;
         } else {
           veri.olusturan_id = CU.id;
@@ -5782,12 +5855,12 @@ async function xlYaz(proje, rows, iptaleGidecek) {
   // ── 3) Excel'de olmayanlari iptale tasi (yalnizca bu proje) ──
   let iptalEdildi = 0;
   for (const it of iptaleGidecek) {
-    const { error } = await sb.from('ihaleler').update({
+    const _yz = await dbYaz(sb.from('ihaleler').update({
       durum: 'iptal',
       iptal_nedeni: imza + ': Excel revizyonunda listeden cikarildi',
       iptal_tarihi: today(),
-    }).eq('id', it._id);
-    if (error) hatalar.push(it.id + ' (iptal): ' + error.message); else iptalEdildi++;
+    }).eq('id', it._id), 'İptal');
+    if (!_yz.ok) hatalar.push(it.id + ' (iptal): ' + _yz.mesaj); else iptalEdildi++;
   }
 
   // ── 4) Bitir ──
@@ -6383,7 +6456,8 @@ async function saveProje() {
 
   let error;
   if (editId) {
-    ({ error } = await sb.from('projeler').update(veri).eq('id', editId));
+    const _yz = await dbYaz(sb.from('projeler').update(veri).eq('id', editId), 'Proje');
+    if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   } else {
     ({ error } = await sb.from('projeler').insert(veri));
   }
@@ -6471,7 +6545,8 @@ async function silProje(id, adi) {
     }
 
     // 4. Son olarak projeyi sil
-    const { error: projErr } = await sb.from('projeler').delete().eq('id', id);
+    const _pz = await dbYaz(sb.from('projeler').delete().eq('id', id), 'Proje silme');
+    const projErr = _pz.ok ? null : { message: _pz.mesaj };
     if (projErr) {
       toast('Proje silinemedi: ' + projErr.message, 'err');
       console.error('Proje silme hatası:', projErr);
@@ -6658,10 +6733,10 @@ async function kullaniciReddet(uid) {
   // Auth user'i silmek icin service_role gerekir (panel'de yok).
   // Bunun yerine profili "reddedildi" olarak isaretleriz:
   // aktif=false kalir, rol='reddedildi' olur → giris yaparsa "Onay Bekliyor" gorur
-  const { error } = await sb.from('kullanici_profilleri')
+  const _yz = await dbYaz(sb.from('kullanici_profilleri')
     .update({ rol: 'reddedildi', aktif: false })
-    .eq('id', uid);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+    .eq('id', uid), 'Red');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Talep reddedildi — kullanici sisteme giremez', 'ok');
   rOnayBekleyenler();
 }
@@ -6722,10 +6797,10 @@ async function rolGuncelle(uid) {
   const select = document.getElementById('rol-usr-' + uid);
   if (!select) return;
   const yeniRol = select.value;
-  const { error } = await sb.from('kullanici_profilleri')
+  const _yz = await dbYaz(sb.from('kullanici_profilleri')
     .update({ rol: yeniRol, aktif: true })
-    .eq('id', uid);
-  if (error) { toast('Hata: ' + error.message, 'err'); return; }
+    .eq('id', uid), 'Rol');
+  if (!_yz.ok) { toast(_yz.mesaj, 'err'); return; }
   toast('Rol güncellendi ✓', 'ok');
   rKullanicilar();
 }
