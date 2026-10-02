@@ -1814,6 +1814,13 @@ async function sifreSifirlaGonder() {
   const kutu = document.getElementById('login-err');
   const yaz = (metin, tur) => {
     if (!kutu) return;
+    // DIKKAT: #login-err CSS'te display:none. Yalnizca innerHTML yazmak
+    // YETMEZ — kutu gizli kalir ve kullanici hicbir sey gormez. Dugme
+    // calisiyor sanilir ama "hicbir sey olmuyor" denir. (Doruk, 02.10.2026)
+    kutu.style.display = 'block';
+    kutu.style.background = 'transparent';
+    kutu.style.border = 'none';
+    kutu.style.padding = '0';
     kutu.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;margin-bottom:12px;'
       + (tur === 'ok' ? 'background:var(--green-glow);color:var(--green)'
                       : 'background:var(--red-glow);color:var(--red)') + '">' + esc(metin) + '</div>';
@@ -1842,6 +1849,7 @@ async function sifreyiKaydet() {
   const kutu = document.getElementById('sifre-msg');
   const yaz = (metin, tur) => {
     if (!kutu) return;
+    kutu.style.display = 'block';
     kutu.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;margin-bottom:12px;'
       + (tur === 'ok' ? 'background:var(--green-glow);color:var(--green)'
                       : 'background:var(--red-glow);color:var(--red)') + '">' + esc(metin) + '</div>';
@@ -1867,9 +1875,12 @@ async function sifreyiKaydet() {
   SifreKipi = false;
   sifreEkraniKapat();
   const gkutu = document.getElementById('login-err');
-  if (gkutu) gkutu.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;'
-    + 'margin-bottom:12px;background:var(--green-glow);color:var(--green)">'
-    + 'Şifreniz değiştirildi. Yeni şifrenizle giriş yapabilirsiniz.</div>';
+  if (gkutu) {
+    gkutu.style.cssText = 'display:block;background:transparent;border:none;padding:0;margin-bottom:0';
+    gkutu.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;'
+      + 'margin-bottom:12px;background:var(--green-glow);color:var(--green)">'
+      + 'Şifreniz değiştirildi. Yeni şifrenizle giriş yapabilirsiniz.</div>';
+  }
 }
 
 async function init() {
@@ -1885,8 +1896,11 @@ async function init() {
     const metin = (_is.hataKodu === 'otp_expired')
       ? 'Şifre sıfırlama bağlantısının süresi dolmuş. Aşağıdan yeniden isteyin.'
       : 'Bağlantı geçersiz: ' + (_is.hataMetin || _is.hata);
-    if (k) k.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;'
-      + 'margin-bottom:12px;background:var(--red-glow);color:var(--red)">' + esc(metin) + '</div>';
+    if (k) {
+      k.style.cssText = 'display:block;background:transparent;border:none;padding:0;margin-bottom:0';
+      k.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;'
+        + 'margin-bottom:12px;background:var(--red-glow);color:var(--red)">' + esc(metin) + '</div>';
+    }
     urlIsaretiniSil();
     return;
   }
