@@ -576,7 +576,33 @@ input[type="date"]:disabled,input:disabled,select:disabled,textarea:disabled{opa
       <div class="login-field"><label>Şifre</label>
         <input type="password" id="l-pw" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
       <button class="btn btn-primary btn-sm login-btn" id="login-btn" onclick="doLogin()">Giriş Yap</button>
+      <div style="text-align:center;margin-top:10px">
+        <button onclick="sifreSifirlaGonder()" id="unuttum-btn"
+          style="background:none;border:none;color:var(--blue-l);font-size:13px;cursor:pointer;
+                 font-family:var(--font);text-decoration:underline;padding:4px">Şifremi unuttum</button>
+      </div>
       <p class="login-footer">Giriş sorunu için sistem yöneticisiyle iletişime geçin.</p>
+    </div>
+
+    <!-- ŞİFRE YENİLEME — e-postadaki bağlantıyla gelindiğinde açılır -->
+    <div id="login-form-sifre" style="display:none">
+      <div id="sifre-msg"></div>
+      <div style="background:var(--blue-glow);border:1px solid var(--border2);border-radius:6px;
+                  padding:11px 13px;margin-bottom:14px;font-size:13px;color:var(--text2)">
+        Kimliğiniz doğrulandı. Yeni şifrenizi belirleyin.
+        <div id="sifre-kim" style="margin-top:4px;font-weight:600;color:var(--text)"></div>
+      </div>
+      <div class="login-field"><label>Yeni şifre * (en az 8 karakter)</label>
+        <input type="password" id="s-pw1" placeholder="••••••••" autocomplete="new-password"></div>
+      <div class="login-field"><label>Yeni şifre (tekrar) *</label>
+        <input type="password" id="s-pw2" placeholder="••••••••" autocomplete="new-password"
+          onkeydown="if(event.key==='Enter')sifreyiKaydet()"></div>
+      <button class="btn btn-primary btn-sm login-btn" id="sifre-btn" onclick="sifreyiKaydet()">Şifremi kaydet</button>
+      <div style="text-align:center;margin-top:10px">
+        <button onclick="sifreEkraniKapat()"
+          style="background:none;border:none;color:var(--text3);font-size:13px;cursor:pointer;
+                 font-family:var(--font);text-decoration:underline;padding:4px">Vazgeç</button>
+      </div>
     </div>
 
     <!-- KAYIT / TALEP FORMU -->
@@ -1714,7 +1740,163 @@ function tumSekmeleriCiz() {
 // ════════════════════════════════════════════
 // BAŞLATMA & AUTH
 // ════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
+// ŞİFRE KURTARMA
+// Doruk, 02.10.2026. Daha once panelde hic yoktu: sifresini unutan
+// kullanici icin tek yol onu Supabase'den silip yeniden kayit olmasiydi.
+//
+// AKIS:
+//  1) Kullanici giris ekraninda "Sifremi unuttum" der, e-postasini yazar.
+//  2) Supabase e-posta gonderir. Bagalantiya tiklayinca PANELIN KENDISINE
+//     doner ve adres cubugunun sonuna #access_token=...&type=recovery
+//     ekler. (Bu yuzden Supabase'de Redirect URL olarak bu sayfanin tam
+//     adresi tanimli OLMAK ZORUNDA — yoksa "siteye ulasilamiyor" cikar.)
+//  3) Panel acilirken bu isareti GORUR ve uygulamayi acmak yerine
+//     "yeni sifre" ekranini gosterir.
+//  4) Yeni sifre kaydedilir, oturum kapatilir, kullanici yeni sifresiyle
+//     normal giris yapar.
+//
+// DIKKAT: supabase-js adres cubugundaki anahtari otomatik okuyup OTURUM
+// ACAR. Isareti init() icinde EN BASTA yakalamazsak kullanici dogrudan
+// panele girer ve sifre ekranini hic gormez.
+// ════════════════════════════════════════════════════════════════════
+
+// Adresin sonundaki #... parcasini okur
+function urlIsareti() {
+  const h = (location.hash || '').replace(/^#/, '');
+  if (!h) return {};
+  const p = new URLSearchParams(h);
+  return {
+    tur:      p.get('type'),              // recovery | magiclink | invite ...
+    hata:     p.get('error'),
+    hataKodu: p.get('error_code'),
+    hataMetin:p.get('error_description'),
+  };
+}
+
+// Isareti adres cubugundan temizle (yenilemede tekrar tetiklenmesin)
+function urlIsaretiniSil() {
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}
+}
+
+let SifreKipi = false;        // yeni sifre ekrani acik mi
+
+function sifreEkraniAc(eposta) {
+  SifreKipi = true;
+  document.getElementById('login-page').classList.remove('hidden');
+  document.getElementById('main-app').classList.add('hidden');
+  ['login-form-giris','login-form-kayit'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
+  const sekme = document.getElementById('lt-giris')?.parentElement;
+  if (sekme) sekme.style.display = 'none';
+  const f = document.getElementById('login-form-sifre');
+  if (f) f.style.display = 'block';
+  const kim = document.getElementById('sifre-kim');
+  if (kim) kim.textContent = eposta || '';
+  document.getElementById('s-pw1')?.focus();
+}
+
+function sifreEkraniKapat() {
+  SifreKipi = false;
+  const f = document.getElementById('login-form-sifre');
+  if (f) f.style.display = 'none';
+  const sekme = document.getElementById('lt-giris')?.parentElement;
+  if (sekme) sekme.style.display = '';
+  loginTab('giris');
+}
+
+// ── Giris ekrani: sifirlama e-postasi gonder ──
+async function sifreSifirlaGonder() {
+  const el = document.getElementById('l-email');
+  const eposta = (el?.value || '').trim();
+  const kutu = document.getElementById('login-err');
+  const yaz = (metin, tur) => {
+    if (!kutu) return;
+    kutu.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;margin-bottom:12px;'
+      + (tur === 'ok' ? 'background:var(--green-glow);color:var(--green)'
+                      : 'background:var(--red-glow);color:var(--red)') + '">' + esc(metin) + '</div>';
+  };
+  if (!eposta) { yaz('Önce e-posta adresinizi yazın, sonra "Şifremi unuttum" deyin.', 'err');
+                 el?.focus(); return; }
+
+  const dug = document.getElementById('unuttum-btn');
+  if (dug) { dug.disabled = true; dug.textContent = 'Gönderiliyor…'; }
+
+  // Donus adresi: panelin KENDI adresi. Supabase'de Redirect URL listesinde
+  // bu adres tanimli olmali.
+  const donus = location.origin + location.pathname;
+  const { error } = await sb.auth.resetPasswordForEmail(eposta, { redirectTo: donus });
+
+  if (dug) { dug.disabled = false; dug.textContent = 'Şifremi unuttum'; }
+  if (error) { yaz('Gönderilemedi: ' + error.message, 'err'); return; }
+  yaz('Şifre sıfırlama bağlantısı ' + eposta + ' adresine gönderildi. '
+    + 'E-postanızdaki bağlantıya tıklayın. Gelen kutusunda yoksa spam klasörüne bakın.', 'ok');
+}
+
+// ── Yeni sifreyi kaydet ──
+async function sifreyiKaydet() {
+  const p1 = document.getElementById('s-pw1')?.value || '';
+  const p2 = document.getElementById('s-pw2')?.value || '';
+  const kutu = document.getElementById('sifre-msg');
+  const yaz = (metin, tur) => {
+    if (!kutu) return;
+    kutu.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;margin-bottom:12px;'
+      + (tur === 'ok' ? 'background:var(--green-glow);color:var(--green)'
+                      : 'background:var(--red-glow);color:var(--red)') + '">' + esc(metin) + '</div>';
+  };
+  if (p1.length < 8)  { yaz('Şifre en az 8 karakter olmalı.', 'err'); return; }
+  if (p1 !== p2)      { yaz('İki şifre aynı değil.', 'err'); return; }
+
+  const dug = document.getElementById('sifre-btn');
+  if (dug) { dug.disabled = true; dug.textContent = 'Kaydediliyor…'; }
+
+  const { error } = await sb.auth.updateUser({ password: p1 });
+
+  if (dug) { dug.disabled = false; dug.textContent = 'Şifremi kaydet'; }
+  if (error) {
+    // En sik sebep: bagalantinin suresi dolmus (varsayilan 1 saat)
+    yaz('Şifre değiştirilemedi: ' + error.message
+      + ' — Bağlantının süresi dolmuş olabilir, yeni bir sıfırlama isteyin.', 'err');
+    return;
+  }
+
+  // Yeni sifreyle normal girise donsun: boylece sifrenin calistigini gorur
+  await sb.auth.signOut();
+  SifreKipi = false;
+  sifreEkraniKapat();
+  const gkutu = document.getElementById('login-err');
+  if (gkutu) gkutu.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;'
+    + 'margin-bottom:12px;background:var(--green-glow);color:var(--green)">'
+    + 'Şifreniz değiştirildi. Yeni şifrenizle giriş yapabilirsiniz.</div>';
+}
+
 async function init() {
+  // ── ŞİFRE KURTARMA BAĞLANTISIYLA MI GELİNDİ? ──
+  // Bu denetim HER ŞEYDEN ONCE olmali: supabase-js adres cubugundaki
+  // anahtari okuyup oturum actigi icin, yakalamazsak kullanici dogrudan
+  // panele girer ve yeni sifre ekranini hic gormez.
+  const _is = urlIsareti();
+  if (_is.hata) {
+    // Suresi dolmus / gecersiz baglanti
+    showLogin();
+    const k = document.getElementById('login-err');
+    const metin = (_is.hataKodu === 'otp_expired')
+      ? 'Şifre sıfırlama bağlantısının süresi dolmuş. Aşağıdan yeniden isteyin.'
+      : 'Bağlantı geçersiz: ' + (_is.hataMetin || _is.hata);
+    if (k) k.innerHTML = '<div style="padding:9px 11px;border-radius:5px;font-size:13px;'
+      + 'margin-bottom:12px;background:var(--red-glow);color:var(--red)">' + esc(metin) + '</div>';
+    urlIsaretiniSil();
+    return;
+  }
+  if (_is.tur === 'recovery') {
+    const { data:{ session } } = await sb.auth.getSession();
+    urlIsaretiniSil();
+    sifreEkraniAc(session?.user?.email || '');
+    return;
+  }
+
   // file:/// ortaminda onAuthStateChange gecikebilir.
   // Once manuel getSession ile kontrol et, sonra listener kur.
   try {
@@ -1735,6 +1917,10 @@ async function init() {
 
   // Auth degisikliklerini dinle
   sb.auth.onAuthStateChange(async(ev, sess) => {
+    // Supabase bazi tarayicilarda recovery olayini gec bildirir.
+    // Sifre ekrani acikken SIGNED_IN gelirse uygulamayi ACMA.
+    if (ev === 'PASSWORD_RECOVERY') { sifreEkraniAc(sess?.user?.email || ''); return; }
+    if (SifreKipi) return;
     if (ev === 'SIGNED_IN' && sess?.user) {
       CU = sess.user;
       await loadProfile();
